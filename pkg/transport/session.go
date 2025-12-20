@@ -21,7 +21,7 @@ type Session struct {
 
 	// Reassembly
 	recvSeq   uint64
-	buffer    map[uint64][]byte
+	buffer    map[uint64]*protocol.Packet
 	readCh    chan []byte // Ordered data ready to be read
 	ConnectCh chan string
 	closeCh   chan struct{}
@@ -36,7 +36,7 @@ func NewSession(id uint64, key []byte, conns []net.Conn) *Session {
 		ID:        id,
 		Key:       key,
 		conns:     make([]net.Conn, 0),
-		buffer:    make(map[uint64][]byte),
+		buffer:    make(map[uint64]*protocol.Packet),
 		readCh:    make(chan []byte, 100), // Buffer some chunks
 		ConnectCh: make(chan string, 1),
 		closeCh:   make(chan struct{}),
@@ -64,6 +64,8 @@ func (s *Session) InjectPacket(pkt *protocol.Packet) {
 func (s *Session) Write(p []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	fmt.Printf("Session %d: Write %d bytes\n", s.ID, len(p))
 
 	if s.closed {
 		return 0, io.ErrClosedPipe
@@ -109,10 +111,12 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		// Send
 		_, err = conn.Write(frame)
 		if err != nil {
+			fmt.Println("Write to conn error:", err)
 			// If one fails, we should probably remove it and try another,
 			// but for MVP let's just return error
 			return sent, err
 		}
+		fmt.Printf("Sent frame of len %d on conn %d\n", len(frame), connIdx)
 
 		sent = end
 	}
@@ -160,17 +164,23 @@ func (s *Session) Close() error {
 func (s *Session) readLoop(conn net.Conn) {
 	defer conn.Close()
 
+	fmt.Println("Starting readLoop for connection")
+
 	for {
 		// Read Length
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			fmt.Println("Read Length error:", err)
 			return // Connection dead
 		}
 		length := binary.BigEndian.Uint32(lenBuf)
 
+		fmt.Printf("Reading packet length: %d\n", length)
+
 		// Read Encrypted Data
 		data := make([]byte, length)
 		if _, err := io.ReadFull(conn, data); err != nil {
+			fmt.Println("Read Data error:", err)
 			return
 		}
 
@@ -237,42 +247,47 @@ func (s *Session) handlePacket(pkt *protocol.Packet) {
 		return
 	}
 
-	if pkt.Cmd == protocol.CmdClose {
-		s.closed = true
-		close(s.readCh)
-		close(s.closeCh)
+	// fmt.Printf("Session %d: Handle Packet Seq %d Cmd %d (RecvSeq %d)\n", s.ID, pkt.Seq, pkt.Cmd, s.recvSeq)
+
+	if pkt.Seq < s.recvSeq {
+		return // Duplicate or old
+	}
+
+	if pkt.Seq > s.recvSeq {
+		// Buffer future packet
+		// fmt.Printf("Session %d: Buffering Seq %d\n", s.ID, pkt.Seq)
+		s.buffer[pkt.Seq] = pkt
 		return
 	}
 
-	if pkt.Cmd == protocol.CmdConnect {
+	// pkt.Seq == s.recvSeq
+	s.processOrderedPacket(pkt)
+	s.recvSeq++
+
+	// Process buffer
+	for {
+		nextPkt, ok := s.buffer[s.recvSeq]
+		if !ok {
+			break
+		}
+		delete(s.buffer, s.recvSeq)
+		s.processOrderedPacket(nextPkt)
+		s.recvSeq++
+	}
+}
+
+func (s *Session) processOrderedPacket(pkt *protocol.Packet) {
+	switch pkt.Cmd {
+	case protocol.CmdClose:
+		s.closed = true
+		close(s.readCh)
+		close(s.closeCh)
+	case protocol.CmdConnect:
 		select {
 		case s.ConnectCh <- string(pkt.Payload):
 		default:
 		}
-		return
-	}
-
-	if pkt.Cmd == protocol.CmdData {
-		// Reassembly Logic
-		if pkt.Seq == s.recvSeq {
-			// Expected packet
-			s.readCh <- pkt.Payload
-			s.recvSeq++
-
-			// Check buffer for subsequent packets
-			for {
-				data, ok := s.buffer[s.recvSeq]
-				if !ok {
-					break
-				}
-				delete(s.buffer, s.recvSeq)
-				s.readCh <- data
-				s.recvSeq++
-			}
-		} else if pkt.Seq > s.recvSeq {
-			// Future packet, buffer it
-			s.buffer[pkt.Seq] = pkt.Payload
-		}
-		// If pkt.Seq < s.recvSeq, it's a duplicate, ignore.
+	case protocol.CmdData:
+		s.readCh <- pkt.Payload
 	}
 }

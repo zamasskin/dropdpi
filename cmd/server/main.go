@@ -122,9 +122,19 @@ func handleSession(session *transport.Session) {
 	// Server -> Client (Read from Target, Write to Session)
 	go func() {
 		defer session.Close() // If target closes, close session
-		io.Copy(session, targetConn)
+		// io.Copy(session, targetConn)
+		if _, err := io.Copy(session, targetConn); err != nil {
+			log.Printf("Copy Target->Session error: %v", err)
+		} else {
+			log.Println("Copy Target->Session finished")
+		}
 	}()
 
 	// Client -> Server (Read from Session, Write to Target)
-	io.Copy(targetConn, session)
+	// io.Copy(targetConn, session)
+	if _, err := io.Copy(targetConn, session); err != nil {
+		log.Printf("Copy Session->Target error: %v", err)
+	} else {
+		log.Println("Copy Session->Target finished")
+	}
 }
