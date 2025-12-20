@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"io"
 	"log"
 	"math/rand"
@@ -9,22 +10,34 @@ import (
 	"strconv"
 	"time"
 
+	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/config"
 	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/protocol"
 	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/transport"
 )
 
 var (
-	serverAddr = "127.0.0.1:8443"
-	serverKey  = []byte("0123456789abcdef0123456789abcdef")
+	serverAddr string
+	serverKey  []byte
 )
 
 func main() {
+	configPath := flag.String("config", "config.json", "path to config file")
+	flag.Parse()
+
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	serverAddr = cfg.ServerAddress
+	serverKey = []byte(cfg.Key)
+
 	rand.Seed(time.Now().UnixNano())
-	listener, err := net.Listen("tcp", "127.0.0.1:1080")
+	listener, err := net.Listen("tcp", cfg.ClientListen)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("SOCKS5 Client listening on 127.0.0.1:1080")
+	log.Printf("SOCKS5 Client listening on %s", cfg.ClientListen)
 
 	for {
 		conn, err := listener.Accept()

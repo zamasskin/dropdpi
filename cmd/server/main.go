@@ -2,29 +2,41 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
 
+	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/config"
 	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/protocol"
 	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/transport"
 )
 
 var (
-	// Hardcoded key for demo
-	serverKey = []byte("0123456789abcdef0123456789abcdef")
+	// Loaded from config
+	serverKey []byte
 	sessions  = make(map[uint64]*transport.Session)
 	mu        sync.Mutex
 )
 
 func main() {
-	listener, err := net.Listen("tcp", ":8443")
+	configPath := flag.String("config", "config.json", "path to config file")
+	flag.Parse()
+
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	serverKey = []byte(cfg.Key)
+
+	listener, err := net.Listen("tcp", cfg.ServerListen)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("Server listening on :8443")
+	log.Printf("Server listening on %s", cfg.ServerListen)
 
 	for {
 		conn, err := listener.Accept()
