@@ -53,3 +53,15 @@ func LoadConfig(path string) (*Config, error) {
 
 	return cfg, nil
 }
+
+func (c *Config) Save(path string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(c)
+}

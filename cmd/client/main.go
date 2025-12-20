@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math/rand"
@@ -22,11 +23,23 @@ var (
 
 func main() {
 	configPath := flag.String("config", "config.json", "path to config file")
+	setupMode := flag.Bool("setup", false, "run interactive setup wizard")
 	flag.Parse()
+
+	if *setupMode {
+		runSetup(*configPath)
+		return
+	}
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Override with positional argument if provided
+	if flag.NArg() > 0 {
+		cfg.ServerAddress = flag.Arg(0)
+		log.Printf("Using Server Address from argument: %s", cfg.ServerAddress)
 	}
 
 	serverAddr = cfg.ServerAddress
@@ -47,6 +60,45 @@ func main() {
 		}
 		go handleSocks5(conn)
 	}
+}
+
+func runSetup(path string) {
+	fmt.Println("=== DropDPI Client Setup ===")
+	cfg := &config.Config{
+		ServerListen: ":8443", // Defaults
+		ClientListen: "127.0.0.1:1080",
+		Key:          "0123456789abcdef0123456789abcdef",
+	}
+
+	fmt.Print("Enter Server Address (e.g. 1.2.3.4:8443): ")
+	fmt.Scanln(&cfg.ServerAddress)
+
+	if cfg.ServerAddress == "" {
+		fmt.Println("Error: Server Address is required.")
+		return
+	}
+
+	fmt.Printf("Enter Local Port (default 127.0.0.1:1080): ")
+	var local string
+	fmt.Scanln(&local)
+	if local != "" {
+		cfg.ClientListen = local
+	}
+
+	fmt.Printf("Enter Encryption Key (32 chars, press Enter for default): ")
+	var key string
+	fmt.Scanln(&key)
+	if key != "" {
+		cfg.Key = key
+	}
+
+	if err := cfg.Save(path); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Configuration saved to %s\n", path)
+	fmt.Println("You can now run the client normally.")
 }
 
 func handleSocks5(conn net.Conn) {
