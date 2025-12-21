@@ -2,10 +2,10 @@ name: Build Binaries
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
+    branches: [main, master]
+    tags: ["v*"]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
             arch: arm64
             cmd_path: ./cmd/client
             output_name: client-macos-apple-silicon
-          
+
           # Server builds (Linux only)
           - os: linux
             arch: amd64
@@ -46,7 +46,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: "1.25"
           check-latest: true
 
       - name: Build
@@ -64,3 +64,25 @@ jobs:
           name: ${{ matrix.output_name }}
           path: build/${{ matrix.output_name }}
           if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
