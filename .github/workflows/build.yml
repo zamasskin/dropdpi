@@ -1,0 +1,66 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.output_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Client builds
+          - os: linux
+            arch: amd64
+            cmd_path: ./cmd/client
+            output_name: client-linux-amd64
+          - os: windows
+            arch: amd64
+            cmd_path: ./cmd/client
+            output_name: client-windows-amd64.exe
+          - os: darwin
+            arch: amd64
+            cmd_path: ./cmd/client
+            output_name: client-macos-intel
+          - os: darwin
+            arch: arm64
+            cmd_path: ./cmd/client
+            output_name: client-macos-apple-silicon
+          
+          # Server builds (Linux only)
+          - os: linux
+            arch: amd64
+            cmd_path: ./cmd/server
+            output_name: server-linux-amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p build
+          go build -v -o build/${{ matrix.output_name }} ${{ matrix.cmd_path }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: build/${{ matrix.output_name }}
+          if-no-files-found: error
