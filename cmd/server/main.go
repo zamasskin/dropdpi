@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/config"
-	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/protocol"
-	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/transport"
+	"github.com/zamasskin/dropdpi/pkg/config"
+	"github.com/zamasskin/dropdpi/pkg/protocol"
+	"github.com/zamasskin/dropdpi/pkg/transport"
 )
 
 var (

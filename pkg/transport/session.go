@@ -8,7 +8,7 @@ import (
 	"net"
 	"sync"
 
-	"gitlab.tiande.tech/AlexeyZamasskin/dropdpi/pkg/protocol"
+	"github.com/zamasskin/dropdpi/pkg/protocol"
 )
 
 // Session represents a logical stream that can be split over multiple physical connections.
