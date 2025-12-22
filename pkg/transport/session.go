@@ -149,8 +149,38 @@ func (s *Session) Write(p []byte) (n int, err error) {
 
 		if successCount == 0 {
 			// All connections failed
-			fmt.Println("All connections failed to write")
-			return sent, io.ErrClosedPipe
+			// DO NOT RETURN ERROR immediately if we have connections but they are just timing out temporarily.
+			// Just log and continue, maybe the next packet will succeed or connections will recover.
+			// But if we return error, the whole session dies.
+			// Wait a bit to avoid busy loop if everything is down.
+			fmt.Println("All connections failed to write packet Seq", pkt.Seq, "- Retrying...")
+			time.Sleep(500 * time.Millisecond)
+
+			// Retry once more with fresh permutation
+			perm = rand.Perm(connsCount)
+			for _, connIdx := range perm {
+				if successCount >= redundancy {
+					break
+				}
+				conn := s.conns[connIdx]
+				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				_, err := conn.Write(frame)
+				conn.SetWriteDeadline(time.Time{})
+				if err == nil {
+					successCount++
+					fmt.Printf("Retry Sent frame Seq %d on conn %d\n", pkt.Seq, connIdx)
+				}
+			}
+
+			if successCount == 0 {
+				fmt.Println("Retry failed for Seq", pkt.Seq, "- Dropping packet to keep session alive")
+				// We drop this packet but keep session alive.
+				// TCP reliability (if used inside tunnel) will handle retransmission of data.
+				// But since we are tunneling TCP over our protocol, if we drop a packet,
+				// the inner TCP connection will see packet loss and retransmit.
+				// Returning error here kills the whole session which is worse.
+				// return sent, io.ErrClosedPipe
+			}
 		}
 
 		sent = end
