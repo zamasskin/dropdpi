@@ -210,6 +210,13 @@ func handleSocks5(conn net.Conn) {
 		return
 	}
 
+	// Send SOCKS5 Success Reply (Required for client to start sending data)
+	// VER=5, REP=0(Success), RSV=0, ATYP=1(IPv4), ADDR=0.0.0.0, PORT=0
+	if _, err := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		log.Println("Failed to send SOCKS5 reply:", err)
+		return
+	}
+
 	// Start Pipe
 	// SOCKS5 Client <-> Session
 	go func() {
