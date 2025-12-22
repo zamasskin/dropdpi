@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"flag"
 	"io"
 	"log"
 	"net"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,9 +19,10 @@ import (
 
 var (
 	// Loaded from config
-	serverKey []byte
-	sessions  = make(map[uint64]*transport.Session)
-	mu        sync.Mutex
+	serverKey    []byte
+	fakePagePath string
+	sessions     = make(map[uint64]*transport.Session)
+	mu           sync.Mutex
 )
 
 func main() {
@@ -31,6 +35,7 @@ func main() {
 	}
 
 	serverKey = []byte(cfg.Key)
+	fakePagePath = cfg.FakePage
 
 	listener, err := net.Listen("tcp", cfg.ServerListen)
 	if err != nil {
@@ -49,6 +54,99 @@ func main() {
 }
 
 func handleConn(conn net.Conn) {
+	// 1. Peek first 5 bytes to check for HTTP
+	header := make([]byte, 5)
+	n, err := io.ReadFull(conn, header)
+	if err != nil {
+		conn.Close()
+		return
+	}
+
+	// 2. Check if HTTP
+	if isHTTP(header) {
+		serveFakePage(conn)
+		return
+	}
+
+	// 3. If not HTTP, assume it's DropDPI protocol.
+	// We need to pass the FULL stream (header + rest) to the protocol handler.
+	// Since we already read 'header', we wrap the conn.
+	bufferedConn := &BufferedConn{
+		Conn:   conn,
+		Reader: io.MultiReader(bytes.NewReader(header[:n]), conn),
+	}
+
+	handleDropDPI(bufferedConn)
+}
+
+func isHTTP(data []byte) bool {
+	methods := []string{"GET ", "POST ", "HEAD ", "PUT ", "DELE", "OPTI", "CONN"}
+	s := string(data)
+	for _, m := range methods {
+		if strings.HasPrefix(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func serveFakePage(conn net.Conn) {
+	defer conn.Close()
+
+	// Default Nginx-like page
+	content := []byte(`<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+html { color-scheme: light dark; }
+body { width: 35em; margin: 0 auto;
+font-family: Tahoma, Verdana, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.</p>
+
+<p>For online documentation and support please refer to
+<a href="http://nginx.org/">nginx.org</a>.<br/>
+Commercial support is available at
+<a href="http://nginx.com/">nginx.com</a>.</p>
+
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>`)
+
+	if fakePagePath != "" {
+		fileContent, err := os.ReadFile(fakePagePath)
+		if err == nil {
+			content = fileContent
+		} else {
+			log.Printf("Failed to read fake page: %v", err)
+		}
+	}
+
+	response := "HTTP/1.1 200 OK\r\n" +
+		"Content-Type: text/html\r\n" +
+		"Connection: close\r\n" +
+		"\r\n"
+
+	conn.Write([]byte(response))
+	conn.Write(content)
+}
+
+// BufferedConn wraps a net.Conn and overrides Read to read from a specific reader first
+type BufferedConn struct {
+	net.Conn
+	Reader io.Reader
+}
+
+func (b *BufferedConn) Read(p []byte) (n int, err error) {
+	return b.Reader.Read(p)
+}
+
+func handleDropDPI(conn net.Conn) {
 	// We need to peek at the first packet to get SessionID.
 	// The protocol is: [Length][Encrypted]
 	// Encrypted contains: [SessionID]...

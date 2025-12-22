@@ -10,6 +10,7 @@ type Config struct {
 	ServerListen  string `json:"server_listen"`  // Address to listen on server side (e.g. ":8443")
 	ClientListen  string `json:"client_listen"`  // Address to listen on client side (e.g. "127.0.0.1:1080")
 	Key           string `json:"key"`            // 32-byte encryption key
+	FakePage      string `json:"fake_page"`      // Path to HTML file to serve on non-proxy requests
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -49,6 +50,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if v := os.Getenv("DROPDPI_KEY"); v != "" {
 		cfg.Key = v
+	}
+	if v := os.Getenv("DROPDPI_FAKE_PAGE"); v != "" {
+		cfg.FakePage = v
 	}
 
 	return cfg, nil
