@@ -4,3 +4,5 @@
 /client-linux-amd64
 /server
 /server-linux-amd64
+client-config.json
+server-config.json

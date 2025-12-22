@@ -22,20 +22,48 @@ func LoadConfig(path string) (*Config, error) {
 		Key:           "0123456789abcdef0123456789abcdef",
 	}
 
-	// 2. Load from file if exists
-	// We ignore IsNotExist error to allow running with defaults/env vars only
+	// 2. Determine config file to load
+	// Priority:
+	// 1. Explicit path passed in argument (if not empty and exists)
+	// 2. "config.json" in current directory
+	// 3. "/etc/dropdpi/config.json"
+
+	filesToCheck := []string{}
 	if path != "" {
-		file, err := os.Open(path)
+		filesToCheck = append(filesToCheck, path)
+	}
+	// Add defaults only if path wasn't explicitly provided or if we want fallback behavior.
+	// Typically, if user provides -config, we only look there.
+	// But if user provided "config.json" (default flag value), we might want to look elsewhere if it doesn't exist.
+	// Let's assume 'path' is what came from flag.
+
+	// If path is "config.json" (default) and it doesn't exist, we try /etc/dropdpi/config.json
+	if path == "config.json" {
+		filesToCheck = append(filesToCheck, "/etc/dropdpi/config.json")
+	}
+
+	var loadedFile string
+
+	for _, p := range filesToCheck {
+		file, err := os.Open(p)
 		if err == nil {
 			defer file.Close()
 			decoder := json.NewDecoder(file)
 			if err := decoder.Decode(cfg); err != nil {
 				return nil, err
 			}
+			loadedFile = p
+			break // Successfully loaded
 		} else if !os.IsNotExist(err) {
-			// If it's a permission error or something else, we return it
-			return nil, err
+			// If it's a permission error or something else, return error only if it was the explicitly requested file
+			if p == path && path != "config.json" {
+				return nil, err
+			}
 		}
+	}
+
+	if loadedFile != "" {
+		// Can log here if we had logger, but pkg/config shouldn't log
 	}
 
 	// 3. Override with Environment Variables
