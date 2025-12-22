@@ -220,12 +220,37 @@ func (s *Session) Read(p []byte) (n int, err error) {
 
 func (s *Session) Close() error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	// Send Close Command to notify peer
+	// Best effort, ignore error
+	s.SendCommand(protocol.CmdClose, nil)
+
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil
 	}
+
 	s.closed = true
+	// Close channels to unblock local readers
 	close(s.closeCh)
+	// Also close readCh to signal EOF to local reader (if not already closed by CmdClose)
+	// We need to be careful not to panic if already closed.
+	// But s.closed guard should be enough if we follow protocol.
+	// However, handlePacket closes readCh on CmdClose.
+	// If we close locally, we should also close readCh?
+	// Yes, otherwise Session.Read blocks on readCh.
+	// But we can't check if channel is closed.
+	// We can use a separate flag or just rely on closeCh which Session.Read checks.
+	// Session.Read checks closeCh: case <-s.closeCh: return 0, io.EOF.
+	// So closing readCh is not strictly necessary for unblocking Read, but good practice.
+	// But dangerous if closed twice. Let's stick to closeCh.
+
 	// We don't close the conns here immediately because they might be shared or we might want to send a close packet.
 	// But for this specific design where Session OWNS the conns:
 	for _, c := range s.conns {
@@ -312,7 +337,9 @@ func (s *Session) SendCommand(cmd byte, payload []byte) error {
 	connIdx := rand.Intn(len(s.conns))
 	conn := s.conns[connIdx]
 
+	conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 	_, err = conn.Write(frame)
+	conn.SetWriteDeadline(time.Time{})
 	return err
 }
 
