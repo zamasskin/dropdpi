@@ -145,25 +145,51 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		}
 
 		if successCount == 0 {
-			// Retry logic (simplified for brevity, similar to original)
-			time.Sleep(100 * time.Millisecond)
-			perm = rand.Perm(connsCount)
-			for _, connIdx := range perm {
-				if successCount >= redundancy {
+			// Retry logic (stronger)
+			// We cannot just drop the packet, otherwise the stream is corrupted (gap in sequence).
+			// We must retry until success or timeout/error.
+
+			maxRetries := 5
+			retryDelay := 200 * time.Millisecond
+
+			for i := 0; i < maxRetries; i++ {
+				// Check if session closed in the meantime
+				s.mu.Lock()
+				if s.closed {
+					s.mu.Unlock()
+					return sent, io.ErrClosedPipe
+				}
+				s.mu.Unlock()
+
+				fmt.Printf("Retry %d/%d for Seq %d\n", i+1, maxRetries, pkt.Seq)
+				time.Sleep(retryDelay)
+
+				// Shuffle again
+				perm = rand.Perm(connsCount)
+				for _, connIdx := range perm {
+					conn := activeConns[connIdx]
+					// Longer deadline for retry
+					conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+					_, err := conn.Write(frame)
+					conn.SetWriteDeadline(time.Time{})
+					if err == nil {
+						successCount++
+						// Break inner loop if we sent it
+						break
+					}
+				}
+
+				if successCount > 0 {
 					break
 				}
-				conn := activeConns[connIdx]
-				conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-				_, err := conn.Write(frame)
-				conn.SetWriteDeadline(time.Time{})
-				if err == nil {
-					successCount++
-				}
+
+				// Exponential backoff
+				retryDelay *= 2
 			}
 
 			if successCount == 0 {
-				fmt.Println("Failed to write packet Seq", pkt.Seq)
-				// return sent, io.ErrClosedPipe // Optional: Fail hard or ignore drop
+				fmt.Printf("Critical: Failed to write packet Seq %d after retries. Closing session.\n", pkt.Seq)
+				return sent, io.ErrClosedPipe
 			}
 		}
 
