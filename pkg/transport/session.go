@@ -105,20 +105,41 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		// Frame it
 		frame := protocol.Frame(ciphertext)
 
-		// Pick a connection (Round Robin)
-		connIdx := s.connIdx
-		s.connIdx = (s.connIdx + 1) % len(s.conns)
-		conn := s.conns[connIdx]
-
-		// Send
-		_, err = conn.Write(frame)
-		if err != nil {
-			fmt.Println("Write to conn error:", err)
-			// If one fails, we should probably remove it and try another,
-			// but for MVP let's just return error
-			return sent, err
+		// Send (Redundant: Send to 2 random connections to bypass packet loss/blocking)
+		// Pick connections
+		connsCount := len(s.conns)
+		if connsCount == 0 {
+			return sent, io.ErrClosedPipe
 		}
-		fmt.Printf("Sent frame of len %d on conn %d\n", len(frame), connIdx)
+
+		// Determine how many connections to use (Redundancy factor)
+		// 2 is a good balance between reliability and overhead.
+		redundancy := 2
+		if connsCount < redundancy {
+			redundancy = connsCount
+		}
+
+		// Random shuffle indices to pick distinct connections
+		perm := rand.Perm(connsCount)
+
+		successCount := 0
+		for i := 0; i < redundancy; i++ {
+			connIdx := perm[i]
+			conn := s.conns[connIdx]
+			_, err := conn.Write(frame)
+			if err == nil {
+				successCount++
+				fmt.Printf("Sent frame Seq %d on conn %d (Redundant)\n", pkt.Seq, connIdx)
+			} else {
+				fmt.Printf("Failed to send frame Seq %d on conn %d: %v\n", pkt.Seq, connIdx, err)
+			}
+		}
+
+		if successCount == 0 {
+			// All failed
+			fmt.Println("All connections failed to write")
+			return sent, io.ErrClosedPipe
+		}
 
 		sent = end
 	}
@@ -178,7 +199,8 @@ func (s *Session) readLoop(conn net.Conn) {
 
 	for {
 		// Set deadline for every read to detect stalled connections
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		// Increased to 1 hour to prevent killing active downloads where client is silent
+		conn.SetReadDeadline(time.Now().Add(1 * time.Hour))
 
 		// Read Length
 		lenBuf := make([]byte, 4)
