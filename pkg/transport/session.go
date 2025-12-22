@@ -123,8 +123,12 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		perm := rand.Perm(connsCount)
 
 		successCount := 0
-		for i := 0; i < redundancy; i++ {
-			connIdx := perm[i]
+		// Try ALL connections until we satisfy redundancy or run out of options
+		for _, connIdx := range perm {
+			if successCount >= redundancy {
+				break
+			}
+
 			conn := s.conns[connIdx]
 
 			// Set write deadline to prevent blocking on a single stalled connection
@@ -132,8 +136,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 
 			_, err := conn.Write(frame)
 
-			// Reset deadline (optional, but good practice if we want "no deadline" behavior elsewhere,
-			// though we set it every time here)
+			// Reset deadline
 			conn.SetWriteDeadline(time.Time{})
 
 			if err == nil {
@@ -145,7 +148,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		}
 
 		if successCount == 0 {
-			// All failed
+			// All connections failed
 			fmt.Println("All connections failed to write")
 			return sent, io.ErrClosedPipe
 		}
