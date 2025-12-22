@@ -73,8 +73,8 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		return 0, io.ErrClosedPipe
 	}
 
-	// Split into chunks (e.g., 1024 bytes payload)
-	chunkSize := 1024
+	// Split into chunks (smaller chunks to avoid blocking/fragmentation)
+	chunkSize := 512 // Reduced from 1024 to 512
 	total := len(p)
 	sent := 0
 
@@ -132,7 +132,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 			conn := s.conns[connIdx]
 
 			// Set write deadline to prevent blocking on a single stalled connection
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 
 			_, err := conn.Write(frame)
 
