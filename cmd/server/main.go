@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +39,8 @@ func main() {
 	serverKey = []byte(cfg.Key)
 	fakePagePath = cfg.FakePage
 
-	// Support multiple listen addresses (e.g. ":8443,:8080")
-	addrs := strings.Split(cfg.ServerListen, ",")
+	// Support multiple listen addresses (e.g. ":8443,:8080", ":8000-8005")
+	addrs := parsePorts(cfg.ServerListen)
 	var wg sync.WaitGroup
 	var activeListeners int
 
@@ -101,6 +103,57 @@ func handleConn(conn net.Conn) {
 	}
 
 	handleDropDPI(bufferedConn)
+}
+
+func parsePorts(input string) []string {
+	var result []string
+	parts := strings.Split(input, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Check for range (e.g. :8000-8005 or 8000-8005)
+		if strings.Contains(part, "-") {
+			// Find the last colon to separate host from port range
+			lastColon := strings.LastIndex(part, ":")
+			var host string
+			var rangeStr string
+
+			if lastColon != -1 {
+				host = part[:lastColon]
+				rangeStr = part[lastColon+1:]
+			} else {
+				rangeStr = part
+			}
+
+			rangeParts := strings.Split(rangeStr, "-")
+			if len(rangeParts) == 2 {
+				start, err1 := strconv.Atoi(rangeParts[0])
+				end, err2 := strconv.Atoi(rangeParts[1])
+				if err1 == nil && err2 == nil && start <= end {
+					for i := start; i <= end; i++ {
+						if host != "" {
+							result = append(result, fmt.Sprintf("%s:%d", host, i))
+						} else {
+							result = append(result, fmt.Sprintf(":%d", i))
+						}
+					}
+					// IMPORTANT: continue here prevents adding the raw part
+					continue
+				}
+			}
+			// If we are here, it means it looked like a range but failed to parse.
+			// Log warning and skip it, DO NOT add as raw string.
+			log.Printf("Warning: Invalid port range format: %s (skipping)", part)
+			continue
+		}
+
+		// Not a range, add as is
+		result = append(result, part)
+	}
+	return result
 }
 
 func isHTTP(data []byte) bool {

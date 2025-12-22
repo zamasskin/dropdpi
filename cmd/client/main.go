@@ -255,12 +255,18 @@ func parsePorts(input string) []string {
 							result = append(result, fmt.Sprintf(":%d", i))
 						}
 					}
+					// Successfully parsed range
 					continue
 				}
 			}
+
+			// If we contain "-", but failed to parse as range, it's likely invalid.
+			// Log warning and skip to avoid "unknown port" error later.
+			log.Printf("Warning: Invalid port range format or parsing error: %s (skipping)", part)
+			continue
 		}
 
-		// Not a range or invalid range, just add as is
+		// Not a range, just add as is
 		result = append(result, part)
 	}
 	return result
