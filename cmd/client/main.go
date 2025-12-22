@@ -176,10 +176,11 @@ func handleSocks5(conn net.Conn) {
 	numStreams := 3
 	conns := make([]net.Conn, 0, numStreams)
 
-	// Parse server addresses (support comma-separated list)
-	serverAddrs := strings.Split(serverAddr, ",")
-	for i := range serverAddrs {
-		serverAddrs[i] = strings.TrimSpace(serverAddrs[i])
+	// Parse server addresses (support comma-separated list and ranges)
+	serverAddrs := parsePorts(serverAddr)
+
+	if len(serverAddrs) == 0 {
+		log.Fatal("No valid server addresses found")
 	}
 
 	for i := 0; i < numStreams; i++ {
@@ -209,18 +210,58 @@ func handleSocks5(conn net.Conn) {
 		return
 	}
 
-	// 4. Respond Success to Browser
-	// We assume success for now (optimistic) because we don't wait for server Ack in this simple protocol
-	// Reply: [VER][REP][RSV][ATYP][BND.ADDR][BND.PORT]
-	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-
-	// 5. Pipe
-	// Browser -> Client -> Session
+	// Start Pipe
+	// SOCKS5 Client <-> Session
 	go func() {
+		defer session.Close()
 		io.Copy(session, conn)
-		// Usually we should close write here, but let's just close session
 	}()
 
-	// Session -> Client -> Browser
 	io.Copy(conn, session)
+}
+
+func parsePorts(input string) []string {
+	var result []string
+	parts := strings.Split(input, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Check for range (e.g. :8000-8005 or 8000-8005)
+		if strings.Contains(part, "-") {
+			// Find the last colon to separate host from port range
+			lastColon := strings.LastIndex(part, ":")
+			var host string
+			var rangeStr string
+
+			if lastColon != -1 {
+				host = part[:lastColon]
+				rangeStr = part[lastColon+1:]
+			} else {
+				rangeStr = part
+			}
+
+			rangeParts := strings.Split(rangeStr, "-")
+			if len(rangeParts) == 2 {
+				start, err1 := strconv.Atoi(rangeParts[0])
+				end, err2 := strconv.Atoi(rangeParts[1])
+				if err1 == nil && err2 == nil && start <= end {
+					for i := start; i <= end; i++ {
+						if host != "" {
+							result = append(result, fmt.Sprintf("%s:%d", host, i))
+						} else {
+							result = append(result, fmt.Sprintf(":%d", i))
+						}
+					}
+					continue
+				}
+			}
+		}
+
+		// Not a range or invalid range, just add as is
+		result = append(result, part)
+	}
+	return result
 }
