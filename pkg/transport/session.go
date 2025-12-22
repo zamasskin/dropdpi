@@ -132,7 +132,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 			conn := s.conns[connIdx]
 
 			// Set write deadline to prevent blocking on a single stalled connection
-			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 
 			_, err := conn.Write(frame)
 
@@ -154,7 +154,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 			// But if we return error, the whole session dies.
 			// Wait a bit to avoid busy loop if everything is down.
 			fmt.Println("All connections failed to write packet Seq", pkt.Seq, "- Retrying...")
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 
 			// Retry once more with fresh permutation
 			perm = rand.Perm(connsCount)
@@ -163,7 +163,7 @@ func (s *Session) Write(p []byte) (n int, err error) {
 					break
 				}
 				conn := s.conns[connIdx]
-				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+				conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 				_, err := conn.Write(frame)
 				conn.SetWriteDeadline(time.Time{})
 				if err == nil {
