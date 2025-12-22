@@ -64,17 +64,10 @@ func (s *Session) InjectPacket(pkt *protocol.Packet) {
 }
 
 func (s *Session) Write(p []byte) (n int, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Note: We deliberately do NOT hold the lock for the entire duration of Write.
+	// Network I/O can be slow and we don't want to block other operations (like Close or Read).
 
-	fmt.Printf("Session %d: Write %d bytes\n", s.ID, len(p))
-
-	if s.closed {
-		return 0, io.ErrClosedPipe
-	}
-
-	// Split into chunks (smaller chunks to avoid blocking/fragmentation)
-	chunkSize := 512 // Reduced from 1024 to 512
+	chunkSize := 512
 	total := len(p)
 	sent := 0
 
@@ -83,103 +76,94 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		if end > total {
 			end = total
 		}
-
 		chunk := p[sent:end]
 
-		// Create packet
-		pkt := &protocol.Packet{
-			SessionID: s.ID,
-			Seq:       s.sendSeq,
-			Cmd:       protocol.CmdData,
-			Payload:   chunk, // This copies the slice header, but we serialize immediately so it's fine
+		// 1. Acquire Lock to update state and get connections
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return sent, io.ErrClosedPipe
 		}
-		s.sendSeq++
 
-		// Serialize and Encrypt
+		// Snapshot connections for this chunk
+		// Copying the slice header is enough, the underlying array is safe (conns are only appended)
+		connsCount := len(s.conns)
+		if connsCount == 0 {
+			s.mu.Unlock()
+			return sent, io.ErrClosedPipe
+		}
+		activeConns := make([]net.Conn, connsCount)
+		copy(activeConns, s.conns)
+
+		pktSeq := s.sendSeq
+		s.sendSeq++
+		sessionID := s.ID
+		key := s.Key // Key is immutable after creation
+		s.mu.Unlock()
+
+		// 2. Create, Serialize, Encrypt (CPU bound, no lock needed)
+		pkt := &protocol.Packet{
+			SessionID: sessionID,
+			Seq:       pktSeq,
+			Cmd:       protocol.CmdData,
+			Payload:   chunk,
+		}
+
 		plaintext := pkt.Serialize()
-		ciphertext, err := protocol.EncryptAESGCM(s.Key, plaintext)
+		ciphertext, err := protocol.EncryptAESGCM(key, plaintext)
 		if err != nil {
 			return sent, err
 		}
 
-		// Frame it
 		frame := protocol.Frame(ciphertext)
 
-		// Send (Redundant: Send to 2 random connections to bypass packet loss/blocking)
-		// Pick connections
-		connsCount := len(s.conns)
-		if connsCount == 0 {
-			return sent, io.ErrClosedPipe
-		}
-
-		// Determine how many connections to use (Redundancy factor)
-		// 2 is a good balance between reliability and overhead.
+		// 3. Send to Network (IO bound, no lock needed)
+		// Redundant: Send to 2 random connections
 		redundancy := 2
 		if connsCount < redundancy {
 			redundancy = connsCount
 		}
 
-		// Random shuffle indices to pick distinct connections
 		perm := rand.Perm(connsCount)
-
 		successCount := 0
-		// Try ALL connections until we satisfy redundancy or run out of options
+
 		for _, connIdx := range perm {
 			if successCount >= redundancy {
 				break
 			}
 
-			conn := s.conns[connIdx]
+			conn := activeConns[connIdx]
 
-			// Set write deadline to prevent blocking on a single stalled connection
 			conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-
 			_, err := conn.Write(frame)
-
-			// Reset deadline
 			conn.SetWriteDeadline(time.Time{})
 
 			if err == nil {
 				successCount++
-				fmt.Printf("Sent frame Seq %d on conn %d (Redundant)\n", pkt.Seq, connIdx)
-			} else {
-				fmt.Printf("Failed to send frame Seq %d on conn %d: %v\n", pkt.Seq, connIdx, err)
+				// fmt.Printf("Sent frame Seq %d on conn %d\n", pkt.Seq, connIdx)
 			}
 		}
 
 		if successCount == 0 {
-			// All connections failed
-			// DO NOT RETURN ERROR immediately if we have connections but they are just timing out temporarily.
-			// Just log and continue, maybe the next packet will succeed or connections will recover.
-			// But if we return error, the whole session dies.
-			// Wait a bit to avoid busy loop if everything is down.
-			fmt.Println("All connections failed to write packet Seq", pkt.Seq, "- Retrying...")
+			// Retry logic (simplified for brevity, similar to original)
 			time.Sleep(100 * time.Millisecond)
-
-			// Retry once more with fresh permutation
 			perm = rand.Perm(connsCount)
 			for _, connIdx := range perm {
 				if successCount >= redundancy {
 					break
 				}
-				conn := s.conns[connIdx]
+				conn := activeConns[connIdx]
 				conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 				_, err := conn.Write(frame)
 				conn.SetWriteDeadline(time.Time{})
 				if err == nil {
 					successCount++
-					fmt.Printf("Retry Sent frame Seq %d on conn %d\n", pkt.Seq, connIdx)
 				}
 			}
 
 			if successCount == 0 {
-				fmt.Println("Retry failed for Seq", pkt.Seq, "- Dropping packet to keep session alive")
-				// We drop this packet but keep session alive.
-				// TCP reliability (if used inside tunnel) will handle retransmission of data.
-				// But since we are tunneling TCP over our protocol, if we drop a packet,
-				// the inner TCP connection will see packet loss and retransmit.
-				// Returning error here kills the whole session which is worse.
-				// return sent, io.ErrClosedPipe
+				fmt.Println("Failed to write packet Seq", pkt.Seq)
+				// return sent, io.ErrClosedPipe // Optional: Fail hard or ignore drop
 			}
 		}
 
@@ -311,33 +295,47 @@ func (s *Session) readLoop(conn net.Conn) {
 
 func (s *Session) SendCommand(cmd byte, payload []byte) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return io.ErrClosedPipe
 	}
 
+	pktSeq := s.sendSeq
+	s.sendSeq++
+	sessionID := s.ID
+	key := s.Key
+
+	// Snapshot connections
+	connsCount := len(s.conns)
+	if connsCount == 0 {
+		s.mu.Unlock()
+		return io.ErrClosedPipe
+	}
+	activeConns := make([]net.Conn, connsCount)
+	copy(activeConns, s.conns)
+
+	s.mu.Unlock()
+
 	pkt := &protocol.Packet{
-		SessionID: s.ID,
-		Seq:       s.sendSeq,
+		SessionID: sessionID,
+		Seq:       pktSeq,
 		Cmd:       cmd,
 		Payload:   payload,
 	}
-	s.sendSeq++
 
 	// Serialize and Encrypt
 	plaintext := pkt.Serialize()
-	ciphertext, err := protocol.EncryptAESGCM(s.Key, plaintext)
+	ciphertext, err := protocol.EncryptAESGCM(key, plaintext)
 	if err != nil {
 		return err
 	}
 
 	frame := protocol.Frame(ciphertext)
 
-	connIdx := rand.Intn(len(s.conns))
-	conn := s.conns[connIdx]
+	connIdx := rand.Intn(connsCount)
+	conn := activeConns[connIdx]
 
-	conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_, err = conn.Write(frame)
 	conn.SetWriteDeadline(time.Time{})
 	return err
