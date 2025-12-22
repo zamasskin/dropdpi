@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/zamasskin/dropdpi/pkg/protocol"
 )
@@ -18,6 +19,7 @@ type Session struct {
 	conns   []net.Conn
 	mu      sync.Mutex
 	sendSeq uint64
+	connIdx int
 
 	// Reassembly
 	recvSeq   uint64
@@ -37,7 +39,7 @@ func NewSession(id uint64, key []byte, conns []net.Conn) *Session {
 		Key:       key,
 		conns:     make([]net.Conn, 0),
 		buffer:    make(map[uint64]*protocol.Packet),
-		readCh:    make(chan []byte, 100), // Buffer some chunks
+		readCh:    make(chan []byte, 1000), // Increased buffer size
 		ConnectCh: make(chan string, 1),
 		closeCh:   make(chan struct{}),
 	}
@@ -103,9 +105,9 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		// Frame it
 		frame := protocol.Frame(ciphertext)
 
-		// Pick a connection (Round Robin or Random)
-		// Simple Random for now to demonstrate "multiple streams" usage without complex state
-		connIdx := rand.Intn(len(s.conns))
+		// Pick a connection (Round Robin)
+		connIdx := s.connIdx
+		s.connIdx = (s.connIdx + 1) % len(s.conns)
 		conn := s.conns[connIdx]
 
 		// Send
@@ -125,21 +127,29 @@ func (s *Session) Write(p []byte) (n int, err error) {
 }
 
 func (s *Session) Read(p []byte) (n int, err error) {
-	// This is a simple implementation that reads one chunk at a time from the channel.
-	// It doesn't handle partial reads well (if p is smaller than the chunk).
-	// Ideally we need a buffer here too.
-	// But let's assume p is large enough for now or use a persistent buffer.
-
-	// For simplicity, let's just grab from the channel.
-	// NOTE: This implementation assumes p is large enough to hold a chunk.
+	s.mu.Lock()
+	if len(s.leftover) > 0 {
+		n = copy(p, s.leftover)
+		s.leftover = s.leftover[n:]
+		s.mu.Unlock()
+		return n, nil
+	}
+	s.mu.Unlock()
 
 	select {
 	case data, ok := <-s.readCh:
 		if !ok {
 			return 0, io.EOF
 		}
-		copy(p, data)
-		return len(data), nil
+		if len(data) > len(p) {
+			n = copy(p, data)
+			s.mu.Lock()
+			s.leftover = data[n:]
+			s.mu.Unlock()
+			return n, nil
+		}
+		n = copy(p, data)
+		return n, nil
 	case <-s.closeCh:
 		return 0, io.EOF
 	}
@@ -167,6 +177,9 @@ func (s *Session) readLoop(conn net.Conn) {
 	fmt.Println("Starting readLoop for connection")
 
 	for {
+		// Set deadline for every read to detect stalled connections
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
 		// Read Length
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
@@ -247,7 +260,7 @@ func (s *Session) handlePacket(pkt *protocol.Packet) {
 		return
 	}
 
-	// fmt.Printf("Session %d: Handle Packet Seq %d Cmd %d (RecvSeq %d)\n", s.ID, pkt.Seq, pkt.Cmd, s.recvSeq)
+	fmt.Printf("S%d: In Seq %d (Want %d) Cmd %d BufSize %d\n", s.ID, pkt.Seq, s.recvSeq, pkt.Cmd, len(s.buffer))
 
 	if pkt.Seq < s.recvSeq {
 		return // Duplicate or old
