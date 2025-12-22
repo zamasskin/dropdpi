@@ -126,7 +126,16 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		for i := 0; i < redundancy; i++ {
 			connIdx := perm[i]
 			conn := s.conns[connIdx]
+
+			// Set write deadline to prevent blocking on a single stalled connection
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+
 			_, err := conn.Write(frame)
+
+			// Reset deadline (optional, but good practice if we want "no deadline" behavior elsewhere,
+			// though we set it every time here)
+			conn.SetWriteDeadline(time.Time{})
+
 			if err == nil {
 				successCount++
 				fmt.Printf("Sent frame Seq %d on conn %d (Redundant)\n", pkt.Seq, connIdx)
