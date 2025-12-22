@@ -37,20 +37,44 @@ func main() {
 	serverKey = []byte(cfg.Key)
 	fakePagePath = cfg.FakePage
 
-	listener, err := net.Listen("tcp", cfg.ServerListen)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("Server listening on %s", cfg.ServerListen)
+	// Support multiple listen addresses (e.g. ":8443,:8080")
+	addrs := strings.Split(cfg.ServerListen, ",")
+	var wg sync.WaitGroup
+	var activeListeners int
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println("Accept error:", err)
+	for _, addr := range addrs {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
 			continue
 		}
-		go handleConn(conn)
+
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Printf("Failed to listen on %s: %v (skipping)", addr, err)
+			continue
+		}
+		log.Printf("Server listening on %s", addr)
+		activeListeners++
+
+		wg.Add(1)
+		go func(l net.Listener) {
+			defer wg.Done()
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					log.Println("Accept error:", err)
+					continue
+				}
+				go handleConn(conn)
+			}
+		}(listener)
 	}
+
+	if activeListeners == 0 {
+		log.Fatal("No listeners started. Check your configuration and port availability.")
+	}
+
+	wg.Wait()
 }
 
 func handleConn(conn net.Conn) {

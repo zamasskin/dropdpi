@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zamasskin/dropdpi/pkg/config"
@@ -70,7 +71,7 @@ func runSetup(path string) {
 		Key:          "0123456789abcdef0123456789abcdef",
 	}
 
-	fmt.Print("Enter Server Address (e.g. 1.2.3.4:8443): ")
+	fmt.Print("Enter Server Address (e.g. 1.2.3.4:8443 or 1.2.3.4:443,1.2.3.4:80): ")
 	fmt.Scanln(&cfg.ServerAddress)
 
 	if cfg.ServerAddress == "" {
@@ -174,10 +175,20 @@ func handleSocks5(conn net.Conn) {
 	// Open N connections (Multiplexing)
 	numStreams := 3
 	conns := make([]net.Conn, 0, numStreams)
+
+	// Parse server addresses (support comma-separated list)
+	serverAddrs := strings.Split(serverAddr, ",")
+	for i := range serverAddrs {
+		serverAddrs[i] = strings.TrimSpace(serverAddrs[i])
+	}
+
 	for i := 0; i < numStreams; i++ {
-		c, err := net.Dial("tcp", serverAddr)
+		// Pick a random address from the list to distribute connections
+		addr := serverAddrs[rand.Intn(len(serverAddrs))]
+
+		c, err := net.Dial("tcp", addr)
 		if err != nil {
-			log.Println("Failed to dial server:", err)
+			log.Printf("Failed to dial server %s: %v", addr, err)
 			continue
 		}
 		conns = append(conns, c)
