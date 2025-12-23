@@ -67,8 +67,11 @@ func main() {
 		go func(listenAddr string) {
 			defer wg.Done()
 
+			// Locate certificates
+			certFile, keyFile := findCertFiles()
+
 			// Try TLS first (if certs exist)
-			err := http.ListenAndServeTLS(listenAddr, "server.crt", "server.key", nil)
+			err := http.ListenAndServeTLS(listenAddr, certFile, keyFile, nil)
 			if err != nil {
 				log.Printf("Failed to listen TLS on %s: %v. Fallback to HTTP.", listenAddr, err)
 				err = http.ListenAndServe(listenAddr, nil)
@@ -84,6 +87,27 @@ func main() {
 	}
 
 	wg.Wait()
+}
+
+func findCertFiles() (string, string) {
+	// Priority 1: Explicit flag? (Not implemented yet, maybe later)
+
+	// Priority 2: Current directory
+	if _, err := os.Stat("server.crt"); err == nil {
+		if _, err := os.Stat("server.key"); err == nil {
+			return "server.crt", "server.key"
+		}
+	}
+
+	// Priority 3: /etc/dropdpi/
+	if _, err := os.Stat("/etc/dropdpi/server.crt"); err == nil {
+		if _, err := os.Stat("/etc/dropdpi/server.key"); err == nil {
+			return "/etc/dropdpi/server.crt", "/etc/dropdpi/server.key"
+		}
+	}
+
+	// Default fallback
+	return "server.crt", "server.key"
 }
 
 func serveWS(w http.ResponseWriter, r *http.Request) {
