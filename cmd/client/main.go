@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -8,10 +9,12 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/zamasskin/dropdpi/pkg/config"
 	"github.com/zamasskin/dropdpi/pkg/protocol"
 	"github.com/zamasskin/dropdpi/pkg/transport"
@@ -172,27 +175,50 @@ func handleSocks5(conn net.Conn) {
 	// 3. Connect to Server (Create Session)
 	sessionID := rand.Uint64()
 
+	// Parse server addresses (support comma-separated list and ranges)
+	serverAddrs := parsePorts(serverAddr)
+	if len(serverAddrs) == 0 {
+		log.Fatal("No valid server addresses found")
+	}
+
 	// Open N connections (Multiplexing)
 	numStreams := 3
 	conns := make([]net.Conn, 0, numStreams)
 
-	// Parse server addresses (support comma-separated list and ranges)
-	serverAddrs := parsePorts(serverAddr)
-
-	if len(serverAddrs) == 0 {
-		log.Fatal("No valid server addresses found")
+	// WebSocket Dialer
+	dialer := websocket.Dialer{
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true}, // Allow self-signed for now
+		HandshakeTimeout: 5 * time.Second,
 	}
 
 	for i := 0; i < numStreams; i++ {
 		// Pick a random address from the list to distribute connections
 		addr := serverAddrs[rand.Intn(len(serverAddrs))]
 
-		c, err := net.Dial("tcp", addr)
+		// Ensure scheme
+		u := url.URL{Scheme: "wss", Host: addr, Path: "/ws"}
+
+		// If using raw TCP ports in config, assume WSS.
+		// NOTE: User might have just IP:Port in config.
+
+		c, _, err := dialer.Dial(u.String(), nil)
 		if err != nil {
-			log.Printf("Failed to dial server %s: %v", addr, err)
-			continue
+			// Fallback to WS (Plain) if WSS fails?
+			// Better to just log error. smart firewall blocks non-TLS usually.
+			log.Printf("Failed to dial WSS %s: %v", u.String(), err)
+
+			// Try plain WS
+			u.Scheme = "ws"
+			c2, _, err2 := dialer.Dial(u.String(), nil)
+			if err2 != nil {
+				log.Printf("Failed to dial WS %s: %v", u.String(), err2)
+				continue
+			}
+			c = c2
 		}
-		conns = append(conns, c)
+
+		// Wrap WS in net.Conn
+		conns = append(conns, transport.NewWebSocketConn(c))
 	}
 
 	if len(conns) == 0 {
