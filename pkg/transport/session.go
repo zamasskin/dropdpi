@@ -59,6 +59,26 @@ func (s *Session) AddConnection(conn net.Conn) {
 	go s.readLoop(conn)
 }
 
+func (s *Session) removeConnection(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, c := range s.conns {
+		if c == conn {
+			// Remove by swapping with last element
+			lastIdx := len(s.conns) - 1
+			s.conns[i] = s.conns[lastIdx]
+			s.conns = s.conns[:lastIdx]
+			break
+		}
+	}
+
+	if len(s.conns) == 0 && !s.closed {
+		// No more connections, close session to unblock readers
+		go s.Close()
+	}
+}
+
 func (s *Session) InjectPacket(pkt *protocol.Packet) {
 	s.handlePacket(pkt)
 }
@@ -86,7 +106,6 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		}
 
 		// Snapshot connections for this chunk
-		// Copying the slice header is enough, the underlying array is safe (conns are only appended)
 		connsCount := len(s.conns)
 		if connsCount == 0 {
 			s.mu.Unlock()
@@ -140,25 +159,31 @@ func (s *Session) Write(p []byte) (n int, err error) {
 
 			if err == nil {
 				successCount++
-				// fmt.Printf("Sent frame Seq %d on conn %d\n", pkt.Seq, connIdx)
+			} else {
+				// If write fails, connection might be dead. Close it to trigger removal.
+				conn.Close()
 			}
 		}
 
 		if successCount == 0 {
 			// Retry logic (stronger)
-			// We cannot just drop the packet, otherwise the stream is corrupted (gap in sequence).
-			// We must retry until success or timeout/error.
-
 			maxRetries := 5
 			retryDelay := 200 * time.Millisecond
 
 			for i := 0; i < maxRetries; i++ {
-				// Check if session closed in the meantime
+				// Re-acquire fresh connections
 				s.mu.Lock()
 				if s.closed {
 					s.mu.Unlock()
 					return sent, io.ErrClosedPipe
 				}
+				connsCount = len(s.conns)
+				if connsCount == 0 {
+					s.mu.Unlock()
+					return sent, io.ErrClosedPipe
+				}
+				activeConns = make([]net.Conn, connsCount)
+				copy(activeConns, s.conns)
 				s.mu.Unlock()
 
 				fmt.Printf("Retry %d/%d for Seq %d\n", i+1, maxRetries, pkt.Seq)
@@ -174,8 +199,9 @@ func (s *Session) Write(p []byte) (n int, err error) {
 					conn.SetWriteDeadline(time.Time{})
 					if err == nil {
 						successCount++
-						// Break inner loop if we sent it
 						break
+					} else {
+						conn.Close()
 					}
 				}
 
@@ -270,29 +296,32 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) readLoop(conn net.Conn) {
+	defer s.removeConnection(conn)
 	defer conn.Close()
 
-	fmt.Println("Starting readLoop for connection")
+	// fmt.Println("Starting readLoop for connection")
 
 	for {
 		// Set deadline for every read to detect stalled connections
 		// Increased to 1 hour to prevent killing active downloads where client is silent
-		conn.SetReadDeadline(time.Now().Add(1 * time.Hour))
+		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
 		// Read Length
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
-			fmt.Println("Read Length error:", err)
+			if err != io.EOF {
+				// fmt.Println("Read Length error:", err)
+			}
 			return // Connection dead
 		}
 		length := binary.BigEndian.Uint32(lenBuf)
 
-		fmt.Printf("Reading packet length: %d\n", length)
+		// fmt.Printf("Reading packet length: %d\n", length)
 
 		// Read Encrypted Data
 		data := make([]byte, length)
 		if _, err := io.ReadFull(conn, data); err != nil {
-			fmt.Println("Read Data error:", err)
+			// fmt.Println("Read Data error:", err)
 			return
 		}
 
@@ -358,13 +387,29 @@ func (s *Session) SendCommand(cmd byte, payload []byte) error {
 
 	frame := protocol.Frame(ciphertext)
 
-	connIdx := rand.Intn(connsCount)
-	conn := activeConns[connIdx]
+	// Try to find a working connection
+	perm := rand.Perm(connsCount)
+	var lastErr error
+	sent := false
 
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_, err = conn.Write(frame)
-	conn.SetWriteDeadline(time.Time{})
-	return err
+	for _, connIdx := range perm {
+		conn := activeConns[connIdx]
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, err = conn.Write(frame)
+		conn.SetWriteDeadline(time.Time{})
+		if err == nil {
+			sent = true
+			break
+		} else {
+			lastErr = err
+			conn.Close() // Trigger removal
+		}
+	}
+
+	if !sent {
+		return lastErr
+	}
+	return nil
 }
 
 func (s *Session) handlePacket(pkt *protocol.Packet) {
@@ -375,7 +420,7 @@ func (s *Session) handlePacket(pkt *protocol.Packet) {
 		return
 	}
 
-	fmt.Printf("S%d: In Seq %d (Want %d) Cmd %d BufSize %d\n", s.ID, pkt.Seq, s.recvSeq, pkt.Cmd, len(s.buffer))
+	// fmt.Printf("S%d: In Seq %d (Want %d) Cmd %d BufSize %d\n", s.ID, pkt.Seq, s.recvSeq, pkt.Cmd, len(s.buffer))
 
 	if pkt.Seq < s.recvSeq {
 		return // Duplicate or old
