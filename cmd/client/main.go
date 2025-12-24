@@ -199,28 +199,33 @@ func handleSocks5(conn net.Conn) {
 
 		// Ensure scheme
 		u := url.URL{Scheme: "wss", Host: addr, Path: "/ws"}
-
-		// If using raw TCP ports in config, assume WSS.
-		// NOTE: User might have just IP:Port in config.
-
-		c, _, err := dialer.Dial(u.String(), nil)
-		if err != nil {
-			// Fallback to WS (Plain) if WSS fails?
-			// Better to just log error. smart firewall blocks non-TLS usually.
-			log.Printf("Failed to dial WSS %s: %v", u.String(), err)
-
-			// Try plain WS
+		if strings.HasPrefix(addr, "ws://") {
 			u.Scheme = "ws"
-			c2, _, err2 := dialer.Dial(u.String(), nil)
-			if err2 != nil {
-				log.Printf("Failed to dial WS %s: %v", u.String(), err2)
-				continue
-			}
-			c = c2
+			u.Host = strings.TrimPrefix(addr, "ws://")
+		} else if strings.HasPrefix(addr, "wss://") {
+			u.Scheme = "wss"
+			u.Host = strings.TrimPrefix(addr, "wss://")
 		}
 
-		// Wrap WS in net.Conn
-		conns = append(conns, transport.NewWebSocketConn(c))
+		// Try Dial
+		c, _, err := dialer.Dial(u.String(), nil)
+		if err != nil {
+			log.Printf("Failed to dial %s: %v", u.String(), err)
+
+			// Fallback: If we tried WSS and failed, try WS just in case user meant plain HTTP
+			if u.Scheme == "wss" {
+				u.Scheme = "ws"
+				c2, _, err2 := dialer.Dial(u.String(), nil)
+				if err2 == nil {
+					log.Printf("Fallback to plain WS success: %s", u.String())
+					c = c2
+				}
+			}
+		}
+
+		if c != nil {
+			conns = append(conns, transport.NewWebSocketConn(c))
+		}
 	}
 
 	if len(conns) == 0 {

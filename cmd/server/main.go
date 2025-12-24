@@ -77,14 +77,23 @@ func main() {
 		go func(listenAddr string) {
 			defer wg.Done()
 
-			// Locate certificates
-			certFile, keyFile := findCertFiles()
+			if cfg.EnableTLS {
+				// Locate certificates
+				certFile, keyFile := findCertFiles()
 
-			// Try TLS first (if certs exist)
-			err := http.ListenAndServeTLS(listenAddr, certFile, keyFile, nil)
-			if err != nil {
-				log.Printf("Failed to listen TLS on %s: %v. Fallback to HTTP.", listenAddr, err)
-				err = http.ListenAndServe(listenAddr, nil)
+				// Try TLS first (if certs exist)
+				err := http.ListenAndServeTLS(listenAddr, certFile, keyFile, nil)
+				if err != nil {
+					log.Printf("Failed to listen TLS on %s: %v. Fallback to HTTP.", listenAddr, err)
+					err = http.ListenAndServe(listenAddr, nil)
+					if err != nil {
+						log.Printf("Failed to listen HTTP on %s: %v", listenAddr, err)
+					}
+				}
+			} else {
+				// Explicitly disable TLS
+				log.Printf("TLS disabled by config. Listening HTTP on %s", listenAddr)
+				err := http.ListenAndServe(listenAddr, nil)
 				if err != nil {
 					log.Printf("Failed to listen HTTP on %s: %v", listenAddr, err)
 				}
