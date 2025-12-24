@@ -1,14 +1,21 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,8 +113,80 @@ func findCertFiles() (string, string) {
 		}
 	}
 
-	// Default fallback
-	return "server.crt", "server.key"
+	// Priority 4: Generate new ones
+	log.Println("Certificates not found. Generating self-signed certificates...")
+
+	// Determine where to save
+	saveDir := "."
+	// If /etc/dropdpi exists and is writable, use it.
+	if info, err := os.Stat("/etc/dropdpi"); err == nil && info.IsDir() {
+		// Check writability by trying to create a temp file
+		testFile := filepath.Join("/etc/dropdpi", ".test_write")
+		if f, err := os.Create(testFile); err == nil {
+			f.Close()
+			os.Remove(testFile)
+			saveDir = "/etc/dropdpi"
+		}
+	}
+
+	certPath := filepath.Join(saveDir, "server.crt")
+	keyPath := filepath.Join(saveDir, "server.key")
+
+	if err := generateSelfSignedCert(certPath, keyPath); err != nil {
+		log.Printf("Failed to generate certificates: %v", err)
+		// Fallback to expecting them in current dir even if missing, which will cause error later
+		return "server.crt", "server.key"
+	}
+
+	log.Printf("Generated new certificates at %s and %s", certPath, keyPath)
+	return certPath, keyPath
+}
+
+func generateSelfSignedCert(certPath, keyPath string) error {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"DropDPI Self-Signed"},
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(365 * 24 * time.Hour),
+
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return err
+	}
+
+	// Save Cert
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		return err
+	}
+
+	// Save Key
+	keyOut, err := os.Create(keyPath)
+	if err != nil {
+		return err
+	}
+	defer keyOut.Close()
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)}); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func serveWS(w http.ResponseWriter, r *http.Request) {
