@@ -121,10 +121,16 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		s.mu.Unlock()
 
 		// 2. Create, Serialize, Encrypt (CPU bound, no lock needed)
+		// Add random padding to obfuscate packet size (0-255 bytes)
+		paddingLen := rand.Intn(256)
+		padding := make([]byte, paddingLen)
+		rand.Read(padding)
+
 		pkt := &protocol.Packet{
 			SessionID: sessionID,
 			Seq:       pktSeq,
 			Cmd:       protocol.CmdData,
+			Padding:   padding,
 			Payload:   chunk,
 		}
 
@@ -137,6 +143,9 @@ func (s *Session) Write(p []byte) (n int, err error) {
 		frame := protocol.Frame(ciphertext)
 
 		// 3. Send to Network (IO bound, no lock needed)
+		// Add Jitter (0-50ms delay) to obfuscate timing
+		time.Sleep(time.Duration(rand.Intn(50)) * time.Millisecond)
+
 		// Redundant: Send to 2 random connections
 		redundancy := 2
 		if connsCount < redundancy {
@@ -371,10 +380,16 @@ func (s *Session) SendCommand(cmd byte, payload []byte) error {
 
 	s.mu.Unlock()
 
+	// Add random padding (0-255 bytes)
+	paddingLen := rand.Intn(256)
+	padding := make([]byte, paddingLen)
+	rand.Read(padding)
+
 	pkt := &protocol.Packet{
 		SessionID: sessionID,
 		Seq:       pktSeq,
 		Cmd:       cmd,
+		Padding:   padding,
 		Payload:   payload,
 	}
 
@@ -386,6 +401,9 @@ func (s *Session) SendCommand(cmd byte, payload []byte) error {
 	}
 
 	frame := protocol.Frame(ciphertext)
+
+	// Add Jitter
+	time.Sleep(time.Duration(rand.Intn(50)) * time.Millisecond)
 
 	// Try to find a working connection
 	perm := rand.Perm(connsCount)

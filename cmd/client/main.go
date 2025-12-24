@@ -26,6 +26,8 @@ var (
 )
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	configPath := flag.String("config", "config.json", "path to config file")
 	setupMode := flag.Bool("setup", false, "run interactive setup wizard")
 	flag.Parse()

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	mrand "math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -42,6 +43,8 @@ var (
 )
 
 func main() {
+	mrand.Seed(time.Now().UnixNano())
+
 	configPath := flag.String("config", "config.json", "path to config file")
 	flag.Parse()
 
